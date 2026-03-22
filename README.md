@@ -4,7 +4,7 @@ A powerful Alfred workflow for navigating GitHub at the speed of thought. Fuzzy-
 
 ## Features
 
-- **Fuzzy repo search** — Type `gh da` to find repos matching "da" (e.g., `dash0`, `dash0-operator`)
+- **Fuzzy repo search** — Type `gh my` to find repos matching "my" (e.g., `my-app`, `my-api`, `my-docs`)
 - **Quick navigation** — Jump to any repo's PRs, issues, actions, wiki, branches, tags, releases, or settings
 - **Actions deep-dive** — Browse a repo's GitHub Actions workflows and filter them
 - **Workflow dispatch** — Trigger `workflow_dispatch` workflows on any branch directly from Alfred
@@ -69,9 +69,9 @@ Actions mode lets you browse and dispatch GitHub Actions workflows:
 
 | Command | Action |
 |---|---|
-| `gh dash0 act` | List repos matching "dash0" — **Tab** to drill into workflows |
-| `gh dash0 act chr` | Filter workflows by "chr" (e.g., Chromatic) |
-| `gh dash0 act chr feat/my-branch` | Dispatch the Chromatic workflow on `feat/my-branch` |
+| `gh my-app act` | List repos matching "my-app" — **Tab** to drill into workflows |
+| `gh my-app act dep` | Filter workflows by "dep" (e.g., "Deploy") |
+| `gh my-app act dep feat/login` | Dispatch the Deploy workflow on branch `feat/login` |
 
 **How it works:**
 
@@ -83,9 +83,9 @@ Actions mode lets you browse and dispatch GitHub Actions workflows:
 
 The workflow uses substring matching — all words in your query must appear somewhere in the repo name, owner, or description. Examples:
 
-- `gh da` → matches "dash0", "dash0-operator", "dash0-cli", etc.
-- `gh da op` → matches "dash0-operator" (both "da" and "op" match)
-- `gh otel js` → matches "opentelemetry-js-distribution"
+- `gh my` → matches "my-app", "my-api", "my-docs", etc.
+- `gh my ap` → matches "my-app" and "my-api" (both "my" and "ap" match)
+- `gh react nat` → matches "react-native-app" (both words are substrings)
 
 ## Caching
 
