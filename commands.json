@@ -1,0 +1,66 @@
+[
+  {
+    "uid": "gh-pr",
+    "title": "Pull Requests",
+    "subtitle": "Open all your GitHub pull requests",
+    "arg": "https://github.com/pulls",
+    "match": "pr pull requests pulls"
+  },
+  {
+    "uid": "gh-pr-me",
+    "title": "My Pull Requests",
+    "subtitle": "Open PRs created by you",
+    "arg": "https://github.com/pulls?q=is%3Aopen+is%3Apr+author%3A%40me",
+    "match": "pr me my pull requests created"
+  },
+  {
+    "uid": "gh-pr-review",
+    "title": "PRs Requesting Review",
+    "subtitle": "Open PRs requesting your review",
+    "arg": "https://github.com/pulls?q=is%3Aopen+is%3Apr+review-requested%3A%40me",
+    "match": "pr review requested reviewing"
+  },
+  {
+    "uid": "gh-issues",
+    "title": "Issues",
+    "subtitle": "Open your GitHub issues",
+    "arg": "https://github.com/issues",
+    "match": "issues bugs"
+  },
+  {
+    "uid": "gh-notifications",
+    "title": "Notifications",
+    "subtitle": "Open GitHub notifications",
+    "arg": "https://github.com/notifications",
+    "match": "notifications notif inbox"
+  },
+  {
+    "uid": "gh-gists",
+    "title": "Gists",
+    "subtitle": "Open your GitHub gists",
+    "arg": "https://gist.github.com",
+    "match": "gists snippets"
+  },
+  {
+    "uid": "gh-profile",
+    "title": "Profile",
+    "subtitle": "Open your GitHub profile",
+    "arg": "https://github.com/{username}",
+    "match": "profile me account"
+  },
+  {
+    "uid": "gh-stars",
+    "title": "Stars",
+    "subtitle": "Open your starred repositories",
+    "arg": "https://github.com/{username}?tab=stars",
+    "match": "stars starred favorites"
+  },
+  {
+    "uid": "gh-refresh",
+    "title": "Refresh Repository Cache",
+    "subtitle": "Re-fetch your repository list from GitHub",
+    "arg": "REFRESH_CACHE",
+    "match": "refresh reload cache update sync",
+    "variables": { "action": "refresh" }
+  }
+]
