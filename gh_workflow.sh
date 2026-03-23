@@ -215,6 +215,20 @@ def filter_workflows(workflows, filter_words):
             matches.append(wf)
     return matches
 
+def make_wf_item(wf, full_name, url):
+    """Build a workflow Alfred item with Tab autocomplete for dispatch."""
+    wf_name = wf.get("name", "")
+    wf_path = wf.get("path", "")
+    wf_file = os.path.basename(wf_path)
+    return {
+        "uid": f"gh-wf-{full_name}-{wf['id']}",
+        "title": wf_name,
+        "subtitle": f"{full_name} → {wf_path} (Tab + branch to dispatch)",
+        "arg": f"{url}/actions/workflows/{wf_file}",
+        "autocomplete": f"{full_name} act {wf_name} ",
+        "icon": icon,
+    }
+
 # --- Dynamic commands ---
 
 def build_commands():
@@ -306,16 +320,7 @@ if actions_mode:
             })
         else:
             for wf in active_wfs:
-                wf_name = wf.get("name", "")
-                wf_path = wf.get("path", "")
-                wf_file = os.path.basename(wf_path)
-                items.append({
-                    "uid": f"gh-wf-{full_name}-{wf['id']}",
-                    "title": wf_name,
-                    "subtitle": f"{full_name} → {wf_path}",
-                    "arg": f"{url}/actions/workflows/{wf_file}",
-                    "icon": icon,
-                })
+                items.append(make_wf_item(wf, full_name, url))
 
         if fetch_failed:
             items.append({"title": "Using stale workflow cache", "subtitle": "Failed to refresh — showing cached data", "valid": False, "icon": icon})
@@ -338,16 +343,7 @@ if actions_mode:
 
         if wf_matches:
             for wf in wf_matches:
-                wf_name = wf.get("name", "")
-                wf_path = wf.get("path", "")
-                wf_file = os.path.basename(wf_path)
-                items.append({
-                    "uid": f"gh-wf-{full_name}-{wf['id']}",
-                    "title": wf_name,
-                    "subtitle": f"{full_name} → {wf_path}",
-                    "arg": f"{url}/actions/workflows/{wf_file}",
-                    "icon": icon,
-                })
+                items.append(make_wf_item(wf, full_name, url))
         else:
             candidate_filter = wf_filter_words[:-1]
             branch_ref = after_actions[-1] if after_actions else None
@@ -367,25 +363,10 @@ if actions_mode:
                     "icon": icon,
                     "variables": {"action": "dispatch"},
                 })
-                items.append({
-                    "uid": f"gh-wf-{full_name}-{wf['id']}",
-                    "title": f"Open {wf_name}",
-                    "subtitle": f"{full_name} → {wf_path}",
-                    "arg": f"{url}/actions/workflows/{wf_file}",
-                    "icon": icon,
-                })
+                items.append(make_wf_item(wf, full_name, url))
             elif wf_matches2:
                 for wf in wf_matches2:
-                    wf_name = wf.get("name", "")
-                    wf_path = wf.get("path", "")
-                    wf_file = os.path.basename(wf_path)
-                    items.append({
-                        "uid": f"gh-wf-{full_name}-{wf['id']}",
-                        "title": wf_name,
-                        "subtitle": f"{full_name} → {wf_path}",
-                        "arg": f"{url}/actions/workflows/{wf_file}",
-                        "icon": icon,
-                    })
+                    items.append(make_wf_item(wf, full_name, url))
             else:
                 items.append({"title": "No workflows found", "subtitle": f"No match for '{' '.join(wf_filter_words)}' in {full_name}", "valid": False, "icon": icon})
 
@@ -450,11 +431,18 @@ for repo in repos:
         if description:
             subtitle += f" - {description}"
 
+    # Tab autocomplete: use nameWithOwner for uniqueness, preserve subcommand
+    if subcommand:
+        ac = f"{full_name} {subcommand} "
+    else:
+        ac = f"{full_name} "
+
     items.append({
         "uid": f"gh-repo-{full_name}-{subcommand or 'home'}",
         "title": title,
         "subtitle": subtitle,
         "arg": target_url,
+        "autocomplete": ac,
         "icon": icon,
         "text": {"copy": target_url, "largetype": full_name},
         "mods": {
