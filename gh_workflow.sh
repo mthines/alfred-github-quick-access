@@ -445,9 +445,12 @@ pr_idx = -1
 if not actions_mode:
     for i, p in enumerate(parts_lower):
         if i > 0 and p in PR_KEYWORDS:
-            # Check there's a search query after "pr" (and it's not just "me" compound)
+            # Check there's a search query after "pr"
+            # Skip if it looks like the user is typing "me" (compound subcommand)
             remaining = parts_lower[i + 1:]
-            if remaining and remaining != ["me"]:
+            if remaining and len(remaining) == 1 and "me".startswith(remaining[0]):
+                break  # partial "me" typing — let compound subcommand handle it
+            if remaining:
                 pr_idx = i
                 pr_mode = True
             break
