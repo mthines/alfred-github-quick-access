@@ -477,9 +477,43 @@ if pr_mode:
         full_name = repo["nameWithOwner"]
         url = repo["url"]
 
-        prs, fetch_failed = load_prs(owner, repo_name)
+        # Parse key:value filters (author:, label:, state:) from query
+        pr_filters = {}
+        text_query = []
+        for w in pr_query_words:
+            if ":" in w:
+                key, _, val = w.partition(":")
+                if key in ("author", "label", "state") and val:
+                    pr_filters[key] = val
+                    continue
+            text_query.append(w)
 
-        # Filter PRs by query
+        # If filters are present, fetch PRs with those filters directly
+        fetch_failed = False
+        if pr_filters:
+            cmd = [gh_bin, "pr", "list", "--repo", full_name,
+                   "--limit", "100",
+                   "--json", "number,title,author,headRefName,url,createdAt,isDraft,state,labels"]
+            author_filter = pr_filters.get("author", "")
+            if author_filter == "me" and gh_username:
+                author_filter = gh_username
+            if author_filter:
+                cmd.extend(["--author", author_filter])
+            if "label" in pr_filters:
+                cmd.extend(["--label", pr_filters["label"]])
+            state = pr_filters.get("state", "open")
+            cmd.extend(["--state", state])
+
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                prs = json.loads(result.stdout) if result.returncode == 0 else []
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                prs = []
+                fetch_failed = True
+        else:
+            prs, fetch_failed = load_prs(owner, repo_name)
+
+        # Filter PRs by text query words
         filtered_prs = []
         for pr in prs:
             pr_title = pr.get("title", "")
@@ -487,7 +521,7 @@ if pr_mode:
             pr_author = pr.get("author", {}).get("login", "")
             pr_num = str(pr.get("number", ""))
             search_text = f"{pr_title} {pr_branch} {pr_author} {pr_num} {pr_title.replace('-', ' ').replace('_', ' ')}"
-            if fuzzy_match(pr_query_words, search_text):
+            if not text_query or fuzzy_match(text_query, search_text):
                 filtered_prs.append(pr)
 
         # If query is a PR number and not in cache, fetch it directly
