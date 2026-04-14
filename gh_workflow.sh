@@ -490,6 +490,20 @@ if pr_mode:
             if fuzzy_match(pr_query_words, search_text):
                 filtered_prs.append(pr)
 
+        # If query is a PR number and not in cache, fetch it directly
+        query_str = " ".join(pr_query_words)
+        if not filtered_prs and query_str.isdigit():
+            try:
+                result = subprocess.run(
+                    [gh_bin, "pr", "view", query_str, "--repo", full_name,
+                     "--json", "number,title,author,headRefName,url,state,isDraft"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    filtered_prs = [json.loads(result.stdout)]
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                pass
+
         if filtered_prs:
             for pr in filtered_prs:
                 pr_title = pr.get("title", "")
@@ -498,11 +512,13 @@ if pr_mode:
                 pr_author = pr.get("author", {}).get("login", "")
                 pr_url = pr.get("url", "")
                 is_draft = pr.get("isDraft", False)
+                pr_state = pr.get("state", "OPEN")
                 draft_label = " [draft]" if is_draft else ""
+                state_label = f" [{pr_state.lower()}]" if pr_state != "OPEN" else ""
 
                 items.append({
                     "uid": f"gh-pr-{full_name}-{pr_num}",
-                    "title": f"#{pr_num}{draft_label} {pr_title}",
+                    "title": f"#{pr_num}{draft_label}{state_label} {pr_title}",
                     "subtitle": f"{full_name} ← {pr_branch} by {pr_author}",
                     "arg": pr_url,
                     "icon": icon,
