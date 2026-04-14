@@ -113,6 +113,7 @@ REPO_SUBCOMMANDS = {
 }
 
 ACTIONS_KEYWORDS = {"a", "ac", "act", "actions"}
+PR_KEYWORDS = {"pr", "prs", "pulls"}
 
 # Human-readable display names for URL paths
 PATH_DISPLAY = {
@@ -224,6 +225,36 @@ def load_workflows(owner, repo_name):
             workflows = json.loads(result.stdout)
             save_json(path, workflows)
             return workflows, False
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+
+    return load_json(path), True
+
+def prs_cache_path(owner, repo_name):
+    d = os.path.join(workflows_dir, owner)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{repo_name}.prs.json")
+
+def load_prs(owner, repo_name):
+    """Load cached open PRs, fetch on-demand if missing/stale."""
+    path = prs_cache_path(owner, repo_name)
+    cache_ttl_prs = 300  # 5 min for PRs (change frequently)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        age = time.time() - os.path.getmtime(path)
+        if age < cache_ttl_prs:
+            return load_json(path), False
+
+    try:
+        result = subprocess.run(
+            [gh_bin, "pr", "list", "--repo", f"{owner}/{repo_name}",
+             "--state", "open", "--limit", "100",
+             "--json", "number,title,author,headRefName,url,createdAt,isDraft"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            prs = json.loads(result.stdout)
+            save_json(path, prs)
+            return prs, False
     except (subprocess.TimeoutExpired, json.JSONDecodeError):
         pass
 
@@ -398,6 +429,95 @@ if actions_mode:
 
         if fetch_failed:
             items.append({"title": "Using stale workflow cache", "subtitle": "Failed to refresh — showing cached data", "valid": False, "icon": icon})
+
+    output = {"items": items}
+    print(json.dumps(output))
+    raise SystemExit(0)
+
+# --- PR search mode ---
+# Pattern: <repo-filter...> <pr-keyword> <search-query...>
+# Only enters this mode if there are words AFTER the pr keyword
+# (otherwise falls through to standard subcommand mode)
+
+pr_mode = False
+pr_idx = -1
+
+if not actions_mode:
+    for i, p in enumerate(parts_lower):
+        if i > 0 and p in PR_KEYWORDS:
+            # Check there's a search query after "pr" (and it's not just "me" compound)
+            remaining = parts_lower[i + 1:]
+            if remaining and remaining != ["me"]:
+                pr_idx = i
+                pr_mode = True
+            break
+
+if pr_mode:
+    repo_filter = parts_lower[:pr_idx]
+    pr_query_words = [w.lower() for w in parts[pr_idx + 1:]]
+    filter_key = " ".join(repo_filter)
+
+    repos = load_json(cache_file)
+    matching = get_matching_repos(repos, repo_filter, prefs, filter_key)
+    items = []
+
+    if not matching:
+        items.append({"title": "No repos found", "subtitle": f"No match for '{filter_key}'", "valid": False, "icon": icon})
+    else:
+        # Use preferred repo or top match
+        preferred = prefs.get(filter_key)
+        repo = None
+        if preferred:
+            repo = next((r for r in matching if r["nameWithOwner"] == preferred), None)
+        if not repo:
+            repo = matching[0]
+
+        owner = repo["owner"]["login"]
+        repo_name = repo["name"]
+        full_name = repo["nameWithOwner"]
+        url = repo["url"]
+
+        prs, fetch_failed = load_prs(owner, repo_name)
+
+        # Filter PRs by query
+        filtered_prs = []
+        for pr in prs:
+            pr_title = pr.get("title", "")
+            pr_branch = pr.get("headRefName", "")
+            pr_author = pr.get("author", {}).get("login", "")
+            pr_num = str(pr.get("number", ""))
+            search_text = f"{pr_title} {pr_branch} {pr_author} {pr_num} {pr_title.replace('-', ' ').replace('_', ' ')}"
+            if fuzzy_match(pr_query_words, search_text):
+                filtered_prs.append(pr)
+
+        if filtered_prs:
+            for pr in filtered_prs:
+                pr_title = pr.get("title", "")
+                pr_num = pr.get("number", 0)
+                pr_branch = pr.get("headRefName", "")
+                pr_author = pr.get("author", {}).get("login", "")
+                pr_url = pr.get("url", "")
+                is_draft = pr.get("isDraft", False)
+                draft_label = " [draft]" if is_draft else ""
+
+                items.append({
+                    "uid": f"gh-pr-{full_name}-{pr_num}",
+                    "title": f"#{pr_num}{draft_label} {pr_title}",
+                    "subtitle": f"{full_name} ← {pr_branch} by {pr_author}",
+                    "arg": pr_url,
+                    "icon": icon,
+                    "text": {"copy": pr_url, "largetype": f"#{pr_num} {pr_title}"},
+                })
+        else:
+            items.append({
+                "title": f"No PRs matching '{' '.join(pr_query_words)}'",
+                "subtitle": f"in {full_name}",
+                "arg": f"{url}/pulls?q=is%3Aopen+{'+'.join(pr_query_words)}",
+                "icon": icon,
+            })
+
+        if fetch_failed:
+            items.append({"title": "Using stale PR cache", "subtitle": "Failed to refresh — showing cached data", "valid": False, "icon": icon})
 
     output = {"items": items}
     print(json.dumps(output))
