@@ -114,7 +114,33 @@ REPO_SUBCOMMANDS = {
 
 ACTIONS_KEYWORDS = {"a", "ac", "act", "actions"}
 
+# Human-readable display names for URL paths
+PATH_DISPLAY = {
+    "/pulls": "pull requests",
+    "/issues": "issues",
+    "/actions": "actions",
+    "/wiki": "wiki",
+    "/settings": "settings",
+    "/branches": "branches",
+    "/tags": "tags",
+    "/releases": "releases",
+    "/projects": "projects",
+    "/security": "security",
+    "/pulse": "insights",
+}
+
 # --- Helpers ---
+
+def display_name(path):
+    """Convert a URL path to a human-readable label."""
+    # Exact match first
+    if path in PATH_DISPLAY:
+        return PATH_DISPLAY[path]
+    # Compound paths with username → "X by me"
+    for base_path, label in PATH_DISPLAY.items():
+        if path.startswith(base_path + "/"):
+            return f"{label} by me"
+    return path.strip("/")
 
 def fuzzy_match(query_words, text):
     text_lower = text.lower()
@@ -423,8 +449,9 @@ for repo in repos:
     target_url = url + subcommand_path
 
     if subcommand:
-        title = f"{name} {subcommand_path.strip('/')}"
-        subtitle = f"{full_name}{lock} → {subcommand_path.strip('/')}"
+        label = display_name(subcommand_path)
+        title = f"{name} - {label}"
+        subtitle = f"{full_name}{lock} → {label}"
     else:
         title = name
         subtitle = f"{full_name}{lock}"
