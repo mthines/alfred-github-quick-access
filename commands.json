@@ -62,5 +62,13 @@
     "arg": "REFRESH_CACHE",
     "match": "refresh reload cache update sync",
     "variables": { "action": "refresh" }
+  },
+  {
+    "uid": "gh-debug-log",
+    "title": "View Debug Log",
+    "subtitle": "Open the workflow debug log to diagnose fetch issues",
+    "arg": "DEBUG_LOG",
+    "match": "debug log diagnose troubleshoot view error",
+    "variables": { "action": "open_log" }
   }
 ]

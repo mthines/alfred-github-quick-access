@@ -27,8 +27,17 @@ case "$action" in
         "$GH_BIN" workflow run "$workflow" --repo "$repo" --ref "$ref" >/dev/null 2>&1
         ;;
     open_log)
-        # Open the debug log in the default text viewer
-        open -t "$query" 2>/dev/null || open "$query" 2>/dev/null
+        # Resolve the actual log path (query may be the placeholder "DEBUG_LOG")
+        log_path="$CACHE_DIR/debug.log"
+        if [ "$query" != "DEBUG_LOG" ] && [ -n "$query" ]; then
+            log_path="$query"
+        fi
+        # Ensure it exists so the user sees something instead of a "file not found" error
+        if [ ! -f "$log_path" ]; then
+            mkdir -p "$(dirname "$log_path")"
+            printf '[%s] Debug log will be written here on next cache refresh.\n' "$(date '+%Y-%m-%d %H:%M:%S')" > "$log_path"
+        fi
+        open -t "$log_path" 2>/dev/null || open "$log_path" 2>/dev/null
         ;;
     select_repo)
         # Save repo preference for this filter key, then pass URL through
