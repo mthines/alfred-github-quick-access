@@ -121,6 +121,54 @@ Alfred → gh_workflow.sh (Script Filter) → action.sh (Router) → Open URL / 
 - `commands.json` — Extensible quick commands (PRs, issues, notifications, etc.).
 - Caches live in `~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.github.quick-access/`.
 
+## Troubleshooting
+
+### "No results found" / "Setup needed: no repositories cached"
+
+This usually means the background repo fetch failed. The workflow writes detailed diagnostics to a debug log:
+
+```
+~/Library/Caches/com.runningwithcrayons.Alfred/Workflow Data/com.github.quick-access/debug.log
+```
+
+You can open it directly from Alfred — when the cache is empty, type `gh` and select **"View debug log"**, or open the file from Finder.
+
+**Common errors and fixes:**
+
+| Log message | Fix |
+|---|---|
+| `gh binary not found or not executable` | Install the GitHub CLI: `brew install gh` |
+| `gh is not authenticated` | Run `gh auth login` in your terminal |
+| `Personal repos fetched: 0` | Check that `gh repo list` works in your terminal |
+| `jq failed to merge results` | Install jq: `brew install jq` |
+
+**Reading the log:**
+
+Each fetch attempt is timestamped. A healthy fetch looks like:
+
+```
+[2026-04-28 19:12:14] Fetch started. GH_BIN=/opt/homebrew/bin/gh JQ_BIN=/opt/homebrew/bin/jq PATH=...
+[2026-04-28 19:12:16] Personal repos fetched: 36
+[2026-04-28 19:12:16] Orgs found: my-org other-org
+[2026-04-28 19:12:19] Cache written: 153 repos
+```
+
+If you see `ERROR: ...` lines, those tell you exactly what went wrong. Run `gh refresh` after fixing the issue to retry the fetch.
+
+**Force-refresh the cache:**
+
+Type `gh refresh` in Alfred — this clears all caches (repos, workflows, username) and re-fetches on the next query.
+
+**Reset everything:**
+
+```bash
+rm -rf ~/Library/Caches/com.runningwithcrayons.Alfred/Workflow\ Data/com.github.quick-access/
+```
+
+### Sharing a debug log
+
+If you're reporting an issue, attach the contents of `debug.log` (it doesn't contain secrets — just paths, timestamps, and error messages from `gh`/`jq`).
+
 ## License
 
 MIT

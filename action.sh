@@ -26,6 +26,10 @@ case "$action" in
         ref=$(printf '%s' "$query" | "$JQ_BIN" -r '.ref')
         "$GH_BIN" workflow run "$workflow" --repo "$repo" --ref "$ref" >/dev/null 2>&1
         ;;
+    open_log)
+        # Open the debug log in the default text viewer
+        open -t "$query" 2>/dev/null || open "$query" 2>/dev/null
+        ;;
     select_repo)
         # Save repo preference for this filter key, then pass URL through
         PREFS_FILE="$CACHE_DIR/repo_preferences.json"

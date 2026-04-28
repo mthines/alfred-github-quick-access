@@ -10,12 +10,31 @@ CACHE_FILE="$CACHE_DIR/repos.json"
 COMMANDS_FILE="$WORKFLOW_DIR/commands.json"
 CACHE_TTL=604800  # 1 week
 USERNAME_FILE="$CACHE_DIR/username"
-
-# Find gh and jq binaries
-GH_BIN=$(command -v gh 2>/dev/null || echo "/opt/homebrew/bin/gh")
-JQ_BIN=$(command -v jq 2>/dev/null || echo "/opt/homebrew/bin/jq")
+DEBUG_LOG="$CACHE_DIR/debug.log"
 
 mkdir -p "$CACHE_DIR"
+
+# Find gh and jq binaries — try PATH, then common install locations
+find_bin() {
+    local name="$1"
+    local found
+    found=$(command -v "$name" 2>/dev/null) && [ -n "$found" ] && { printf '%s' "$found"; return 0; }
+    for p in /opt/homebrew/bin /usr/local/bin /usr/bin /opt/local/bin "$HOME/.local/bin"; do
+        if [ -x "$p/$name" ]; then
+            printf '%s' "$p/$name"; return 0
+        fi
+    done
+    printf '%s' "$name"  # last resort, will fail with clear error
+    return 1
+}
+
+GH_BIN=$(find_bin gh)
+JQ_BIN=$(find_bin jq)
+
+# Logging helper for background fetch — captures errors so users can debug
+log_debug() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$DEBUG_LOG"
+}
 
 # Resolve GitHub username: user config > cached > gh api query
 if [ -n "${github_username:-}" ]; then
@@ -49,17 +68,44 @@ fi
 if [ "$needs_refresh" = true ]; then
     # Fetch in background so Alfred stays responsive
     (
+        log_debug "Fetch started. GH_BIN=$GH_BIN JQ_BIN=$JQ_BIN PATH=$PATH"
+
+        # Verify binaries exist before attempting fetches
+        if [ ! -x "$GH_BIN" ] && ! command -v "$GH_BIN" >/dev/null 2>&1; then
+            log_debug "ERROR: gh binary not found or not executable at: $GH_BIN"
+            exit 1
+        fi
+        if [ ! -x "$JQ_BIN" ] && ! command -v "$JQ_BIN" >/dev/null 2>&1; then
+            log_debug "ERROR: jq binary not found or not executable at: $JQ_BIN"
+            exit 1
+        fi
+
+        # Verify gh is authenticated
+        if ! "$GH_BIN" auth status >/dev/null 2>>"$DEBUG_LOG"; then
+            log_debug "ERROR: gh is not authenticated. Run 'gh auth login' in a terminal."
+            exit 1
+        fi
+
         # Fetch all accessible repos using gh repo list (covers personal + all orgs)
-        "$GH_BIN" repo list --limit 500 --json nameWithOwner,name,description,url,isPrivate,owner,updatedAt 2>/dev/null > "$CACHE_FILE.tmp.personal"
+        "$GH_BIN" repo list --limit 500 --json nameWithOwner,name,description,url,isPrivate,owner,updatedAt 2>>"$DEBUG_LOG" > "$CACHE_FILE.tmp.personal"
+        personal_count=$("$JQ_BIN" 'length' "$CACHE_FILE.tmp.personal" 2>/dev/null || echo "?")
+        log_debug "Personal repos fetched: $personal_count"
 
         # Fetch org repos (gh repo list with viewer affiliations misses many org repos)
-        orgs=$("$GH_BIN" api user/orgs --jq '.[].login' 2>/dev/null)
+        orgs=$("$GH_BIN" api user/orgs --jq '.[].login' 2>>"$DEBUG_LOG")
+        log_debug "Orgs found: $(printf '%s' "$orgs" | tr '\n' ' ')"
         for org in $orgs; do
-            "$GH_BIN" repo list "$org" --limit 500 --json nameWithOwner,name,description,url,isPrivate,owner,updatedAt 2>/dev/null
+            "$GH_BIN" repo list "$org" --limit 500 --json nameWithOwner,name,description,url,isPrivate,owner,updatedAt 2>>"$DEBUG_LOG"
         done > "$CACHE_FILE.tmp.orgs"
 
         # Merge and deduplicate by nameWithOwner
-        "$JQ_BIN" -s 'add | unique_by(.nameWithOwner) | sort_by(.updatedAt) | reverse' "$CACHE_FILE.tmp.personal" "$CACHE_FILE.tmp.orgs" > "$CACHE_FILE.tmp" 2>/dev/null && mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+        if "$JQ_BIN" -s 'add | unique_by(.nameWithOwner) | sort_by(.updatedAt) | reverse' "$CACHE_FILE.tmp.personal" "$CACHE_FILE.tmp.orgs" > "$CACHE_FILE.tmp" 2>>"$DEBUG_LOG"; then
+            mv "$CACHE_FILE.tmp" "$CACHE_FILE"
+            total_count=$("$JQ_BIN" 'length' "$CACHE_FILE" 2>/dev/null || echo "?")
+            log_debug "Cache written: $total_count repos"
+        else
+            log_debug "ERROR: jq failed to merge results"
+        fi
         rm -f "$CACHE_FILE.tmp.personal" "$CACHE_FILE.tmp.orgs"
     ) &
 fi
@@ -653,7 +699,54 @@ for repo in repos:
     })
 
 if not items:
-    items.append({"title": "No results found", "subtitle": f"No matches for '{raw_query}'", "valid": False, "icon": icon})
+    # Differentiate between "cache empty" (likely setup issue) and "real no match"
+    if not repos:
+        debug_log = os.path.join(os.path.dirname(cache_file), "debug.log")
+        gh_bin_path = os.environ.get("GH_BIN", "gh")
+
+        # Quick health check: does gh exist and is it authenticated?
+        gh_exists = os.path.exists(gh_bin_path) or subprocess.run(
+            ["which", gh_bin_path], capture_output=True
+        ).returncode == 0
+
+        diag_subtitle = "Repository cache is empty — fetch may still be running or failed"
+
+        if not gh_exists:
+            diag_subtitle = f"gh CLI not found at: {gh_bin_path}. Install: brew install gh"
+        else:
+            try:
+                auth = subprocess.run([gh_bin_path, "auth", "status"],
+                                      capture_output=True, text=True, timeout=5)
+                if auth.returncode != 0:
+                    diag_subtitle = "gh CLI is not authenticated. Run 'gh auth login' in a terminal."
+            except Exception:
+                pass
+
+        items.append({
+            "title": "Setup needed: no repositories cached",
+            "subtitle": diag_subtitle,
+            "arg": "https://github.com/mthines/alfred-github-quick-access#troubleshooting",
+            "icon": icon,
+        })
+
+        if os.path.exists(debug_log):
+            items.append({
+                "title": "View debug log",
+                "subtitle": f"Press Enter to open: {debug_log}",
+                "arg": debug_log,
+                "icon": icon,
+                "variables": {"action": "open_log"},
+            })
+
+        items.append({
+            "title": "Refresh Repository Cache",
+            "subtitle": "Re-fetch repositories from GitHub",
+            "arg": "REFRESH_CACHE",
+            "icon": icon,
+            "variables": {"action": "refresh"},
+        })
+    else:
+        items.append({"title": "No results found", "subtitle": f"No matches for '{raw_query}'", "valid": False, "icon": icon})
 
 output = {"items": items}
 if not repos:
