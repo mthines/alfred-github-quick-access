@@ -20,10 +20,22 @@ case "$action" in
         printf '%s' "$query" | pbcopy
         ;;
     dispatch)
-        # Parse JSON payload: {"repo": "owner/name", "workflow": "file.yaml", "ref": "branch"}
+        # Parse JSON payload: {"repo": "owner/name", "workflow": "file.yaml", "ref": "branch-or-pr-url"}
         repo=$(printf '%s' "$query" | "$JQ_BIN" -r '.repo')
         workflow=$(printf '%s' "$query" | "$JQ_BIN" -r '.workflow')
         ref=$(printf '%s' "$query" | "$JQ_BIN" -r '.ref')
+
+        # If ref is a GitHub PR URL, resolve it to the PR's head branch
+        if [[ "$ref" =~ ^https?://github\.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
+            pr_owner="${BASH_REMATCH[1]}"
+            pr_repo="${BASH_REMATCH[2]}"
+            pr_num="${BASH_REMATCH[3]}"
+            resolved=$("$GH_BIN" pr view "$pr_num" --repo "$pr_owner/$pr_repo" --json headRefName --jq '.headRefName' 2>>"$CACHE_DIR/debug.log")
+            if [ -n "$resolved" ]; then
+                ref="$resolved"
+            fi
+        fi
+
         "$GH_BIN" workflow run "$workflow" --repo "$repo" --ref "$ref" >/dev/null 2>&1
         ;;
     open_log)

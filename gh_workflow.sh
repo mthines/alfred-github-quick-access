@@ -114,8 +114,11 @@ fi
 python3 << 'PYTHON'
 import json
 import os
+import re
 import subprocess
 import time
+
+PR_URL_RE = re.compile(r'^https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)')
 
 cache_file = os.environ["CACHE_FILE"]
 commands_file = os.environ["COMMANDS_FILE"]
@@ -332,6 +335,41 @@ def make_wf_item(wf, full_name, url):
         "icon": icon,
     }
 
+def make_dispatch_item(wf, full_name, branch_ref):
+    """Build an Alfred item that dispatches a workflow on the given branch/PR."""
+    wf_name = wf.get("name", "")
+    wf_path = wf.get("path", "")
+    wf_file = os.path.basename(wf_path)
+
+    pr_match = PR_URL_RE.match(branch_ref)
+    if pr_match:
+        pr_owner, pr_repo, pr_num = pr_match.groups()
+        title = f"Run {wf_name} on PR #{pr_num} ({pr_owner}/{pr_repo})"
+        subtitle = f"Dispatch {full_name} → {wf_file} (PR head branch resolved at run time)"
+    else:
+        title = f"Run {wf_name} on {branch_ref}"
+        subtitle = f"Dispatch {full_name} → {wf_file} (branch: {branch_ref})"
+
+    return {
+        # Stable uid (no branch_ref) so Alfred can learn dispatch frequency
+        # across branches and rank it above the plain wf browse item.
+        "uid": f"gh-dispatch-{full_name}-{wf['id']}",
+        "title": title,
+        "subtitle": subtitle,
+        "arg": json.dumps({"repo": full_name, "workflow": wf_file, "ref": branch_ref}),
+        "icon": icon,
+        "variables": {"action": "dispatch"},
+    }
+
+def wf_item_no_uid(wf, full_name, url):
+    """Variant of make_wf_item without a uid — used when emitted alongside a
+    dispatch item so Alfred's knowledge-based sorting does not reorder it
+    above the dispatch (the dispatch is the primary intent when a branch is
+    passed)."""
+    item = make_wf_item(wf, full_name, url)
+    item.pop("uid", None)
+    return item
+
 # --- Dynamic commands ---
 
 def build_commands():
@@ -442,36 +480,59 @@ if actions_mode:
 
         workflows, fetch_failed = load_workflows(owner, repo_name)
 
-        wf_matches = filter_workflows(workflows, wf_filter_words)
+        # Detect an explicit branch-looking last argument (contains '/' or is a
+        # PR URL). When present, ALWAYS strip it out and treat it as a branch
+        # ref — never let it leak into the workflow filter. This guarantees the
+        # dispatch action is the first item even when the workflow filter is
+        # ambiguous (e.g. matches multiple workflows).
+        last_arg = after_actions[-1] if after_actions else ""
+        explicit_branch = (
+            last_arg if last_arg and ("/" in last_arg or PR_URL_RE.match(last_arg))
+            else None
+        )
 
-        if wf_matches:
-            for wf in wf_matches:
-                items.append(make_wf_item(wf, full_name, url))
+        if explicit_branch:
+            branch_ref = explicit_branch
+            wf_filter_remaining = wf_filter_words[:-1]
+            wf_matches = (
+                filter_workflows(workflows, wf_filter_remaining) if wf_filter_remaining
+                else [w for w in workflows if w.get("state") == "active"]
+            )
+
+            if wf_matches:
+                # Dispatch items first (one per matching workflow), then the
+                # plain workflow open-in-browser items below — emitted without
+                # uids so Alfred's knowledge-based sort can't bump them above
+                # the dispatch items.
+                for wf in wf_matches:
+                    items.append(make_dispatch_item(wf, full_name, branch_ref))
+                for wf in wf_matches:
+                    items.append(wf_item_no_uid(wf, full_name, url))
+            else:
+                items.append({"title": "No workflows found", "subtitle": f"No match for '{' '.join(wf_filter_remaining)}' in {full_name}", "valid": False, "icon": icon})
         else:
-            candidate_filter = wf_filter_words[:-1]
-            branch_ref = after_actions[-1] if after_actions else None
+            wf_matches = filter_workflows(workflows, wf_filter_words)
 
-            wf_matches2 = filter_workflows(workflows, candidate_filter) if candidate_filter else []
-
-            if len(wf_matches2) == 1 and branch_ref:
-                wf = wf_matches2[0]
-                wf_name = wf.get("name", "")
-                wf_path = wf.get("path", "")
-                wf_file = os.path.basename(wf_path)
-                items.append({
-                    "uid": f"gh-dispatch-{full_name}-{wf['id']}-{branch_ref}",
-                    "title": f"Run {wf_name} on {branch_ref}",
-                    "subtitle": f"Dispatch {full_name} → {wf_file} (branch: {branch_ref})",
-                    "arg": json.dumps({"repo": full_name, "workflow": wf_file, "ref": branch_ref}),
-                    "icon": icon,
-                    "variables": {"action": "dispatch"},
-                })
-                items.append(make_wf_item(wf, full_name, url))
-            elif wf_matches2:
-                for wf in wf_matches2:
+            if wf_matches:
+                for wf in wf_matches:
                     items.append(make_wf_item(wf, full_name, url))
             else:
-                items.append({"title": "No workflows found", "subtitle": f"No match for '{' '.join(wf_filter_words)}' in {full_name}", "valid": False, "icon": icon})
+                # Fallback: treat last arg as a branch when the full filter
+                # yields nothing (covers branch names without '/' like "main").
+                candidate_filter = wf_filter_words[:-1]
+                branch_ref = after_actions[-1] if after_actions else None
+
+                wf_matches2 = filter_workflows(workflows, candidate_filter) if candidate_filter else []
+
+                if len(wf_matches2) == 1 and branch_ref:
+                    wf = wf_matches2[0]
+                    items.append(make_dispatch_item(wf, full_name, branch_ref))
+                    items.append(wf_item_no_uid(wf, full_name, url))
+                elif wf_matches2:
+                    for wf in wf_matches2:
+                        items.append(make_wf_item(wf, full_name, url))
+                else:
+                    items.append({"title": "No workflows found", "subtitle": f"No match for '{' '.join(wf_filter_words)}' in {full_name}", "valid": False, "icon": icon})
 
         if fetch_failed:
             items.append({"title": "Using stale workflow cache", "subtitle": "Failed to refresh — showing cached data", "valid": False, "icon": icon})
@@ -584,6 +645,26 @@ if pr_mode:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     filtered_prs = [json.loads(result.stdout)]
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                pass
+
+        # If still no matches and the query is a single non-digit word with no
+        # key:value filters, try resolving it as a branch name via --head.
+        # Catches closed/merged PRs and PRs outside the open-PR cache (limit 100).
+        if (not filtered_prs and not pr_filters
+                and len(pr_query_words) == 1 and not pr_query_words[0].isdigit()):
+            branch = pr_query_words[0]
+            try:
+                result = subprocess.run(
+                    [gh_bin, "pr", "list", "--repo", full_name,
+                     "--head", branch, "--state", "all", "--limit", "10",
+                     "--json", "number,title,author,headRefName,url,createdAt,isDraft,state"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    branch_prs = json.loads(result.stdout)
+                    branch_prs.sort(key=lambda p: p.get("createdAt", ""), reverse=True)
+                    filtered_prs = branch_prs
             except (subprocess.TimeoutExpired, json.JSONDecodeError):
                 pass
 
