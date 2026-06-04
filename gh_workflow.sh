@@ -125,7 +125,9 @@ commands_file = os.environ["COMMANDS_FILE"]
 workflow_dir = os.environ["WORKFLOW_DIR"]
 workflows_dir = os.environ["WORKFLOWS_DIR"]
 cache_ttl = int(os.environ.get("CACHE_TTL", "604800"))
-raw_query = os.environ.get("query", "").strip()
+_raw_query_env = os.environ.get("query", "")
+trailing_space = _raw_query_env != _raw_query_env.rstrip()
+raw_query = _raw_query_env.strip()
 gh_bin = os.environ.get("GH_BIN", "gh")
 gh_username = os.environ.get("GH_USERNAME", "")
 icon = {"path": "icon.png"}
@@ -163,6 +165,8 @@ REPO_SUBCOMMANDS = {
 
 ACTIONS_KEYWORDS = {"a", "ac", "act", "actions"}
 PR_KEYWORDS = {"pr", "prs", "pulls"}
+PR_FILTER_KEYS = {"author", "label", "state"}
+PR_STATE_VALUES = ["open", "closed", "merged", "all"]
 
 # Human-readable display names for URL paths
 PATH_DISPLAY = {
@@ -308,6 +312,118 @@ def load_prs(owner, repo_name):
         pass
 
     return load_json(path), True
+
+def labels_cache_path(owner, repo_name):
+    d = os.path.join(workflows_dir, owner)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{repo_name}.labels.json")
+
+def load_labels(owner, repo_name):
+    """Load cached labels, fetch on-demand if missing/stale."""
+    path = labels_cache_path(owner, repo_name)
+    cache_ttl_labels = 86400  # 1 day — labels change rarely
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        age = time.time() - os.path.getmtime(path)
+        if age < cache_ttl_labels:
+            return load_json(path), False
+
+    try:
+        result = subprocess.run(
+            [gh_bin, "label", "list", "--repo", f"{owner}/{repo_name}",
+             "--limit", "200", "--json", "name,color,description"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            labels = json.loads(result.stdout)
+            save_json(path, labels)
+            return labels, False
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+
+    return load_json(path), True
+
+def build_pr_filter_suggestions(key, partial, prefix_words, owner, repo_name, full_name, url):
+    """Tab-completion items for PR filter values (author/label/state)."""
+    items = []
+    partial_lower = partial.lower()
+    prefix_str = (" ".join(prefix_words) + " ") if prefix_words else ""
+
+    if key == "author":
+        prs, _ = load_prs(owner, repo_name)
+        author_counts = {}
+        for pr in prs:
+            a = pr.get("author", {}).get("login", "")
+            if a:
+                author_counts[a] = author_counts.get(a, 0) + 1
+
+        if gh_username and (not partial_lower or "me".startswith(partial_lower)):
+            items.append({
+                "uid": f"gh-pr-author-{full_name}-me",
+                "title": "author:me",
+                "subtitle": f"Your open PRs in {full_name} — Tab to apply, Enter to view",
+                "autocomplete": f"{full_name} pr {prefix_str}author:me ",
+                "arg": f"{url}/pulls?q=is%3Aopen+author%3A{gh_username}",
+                "icon": icon,
+            })
+
+        for name, count in sorted(author_counts.items(), key=lambda x: (-x[1], x[0])):
+            if partial_lower and partial_lower not in name.lower():
+                continue
+            plural = "s" if count != 1 else ""
+            items.append({
+                "uid": f"gh-pr-author-{full_name}-{name}",
+                "title": f"author:{name}",
+                "subtitle": f"{count} open PR{plural} in {full_name} — Tab to apply, Enter to view",
+                "autocomplete": f"{full_name} pr {prefix_str}author:{name} ",
+                "arg": f"{url}/pulls?q=is%3Aopen+author%3A{name}",
+                "icon": icon,
+            })
+
+    elif key == "state":
+        for state in PR_STATE_VALUES:
+            if partial_lower and not state.startswith(partial_lower):
+                continue
+            search_q = "is%3Apr" if state == "all" else f"is%3Apr+is%3A{state}"
+            items.append({
+                "uid": f"gh-pr-state-{full_name}-{state}",
+                "title": f"state:{state}",
+                "subtitle": f"Filter PRs by state — Tab to apply, Enter to view",
+                "autocomplete": f"{full_name} pr {prefix_str}state:{state} ",
+                "arg": f"{url}/pulls?q={search_q}",
+                "icon": icon,
+            })
+
+    elif key == "label":
+        labels, _ = load_labels(owner, repo_name)
+        for lab in sorted(labels, key=lambda x: x.get("name", "").lower()):
+            name = lab.get("name", "")
+            if not name or " " in name:
+                # Skip labels with spaces — they break space-separated query parsing.
+                continue
+            if partial_lower and partial_lower not in name.lower():
+                continue
+            desc = (lab.get("description") or "").strip()
+            subtitle = desc if desc else "Filter PRs by label"
+            items.append({
+                "uid": f"gh-pr-label-{full_name}-{name}",
+                "title": f"label:{name}",
+                "subtitle": f"{subtitle[:100]} — Tab to apply, Enter to view",
+                "autocomplete": f"{full_name} pr {prefix_str}label:{name} ",
+                "arg": f"{url}/pulls?q=is%3Aopen+label%3A{name}",
+                "icon": icon,
+            })
+
+    if not items:
+        literal = f"{key}:{partial}" if partial else f"{key}:"
+        items.append({
+            "title": f"No {key}s matching '{partial}'" if partial else f"No {key}s available",
+            "subtitle": f"in {full_name} — Enter to search GitHub directly",
+            "autocomplete": f"{full_name} pr {prefix_str}{literal}",
+            "arg": f"{url}/pulls?q=is%3Aopen+{key}%3A{partial}",
+            "icon": icon,
+        })
+
+    return items
 
 def filter_workflows(workflows, filter_words):
     matches = []
@@ -551,12 +667,13 @@ pr_idx = -1
 
 if not actions_mode:
     for i, p in enumerate(parts_lower):
-        if i > 0 and p in PR_KEYWORDS:
-            # Check there's a search query after "pr"
-            # Skip if it looks like the user is typing "me" (compound subcommand)
+        if p in PR_KEYWORDS:
             remaining = parts_lower[i + 1:]
-            if remaining and len(remaining) == 1 and "me".startswith(remaining[0]):
-                break  # partial "me" typing — let compound subcommand handle it
+            # With a repo prefix, "pr me" is the compound subcommand → bail so
+            # standard mode can resolve /pulls/<username>. Without a repo there
+            # is no compound path, so let cross-repo search handle "pr me".
+            if i > 0 and remaining and len(remaining) == 1 and "me".startswith(remaining[0]):
+                break
             if remaining:
                 pr_idx = i
                 pr_mode = True
@@ -565,7 +682,114 @@ if not actions_mode:
 if pr_mode:
     repo_filter = parts_lower[:pr_idx]
     pr_query_words = [w.lower() for w in parts[pr_idx + 1:]]
+    # Normalize "#1234" → "1234" so PR-number lookup works with or without the prefix.
+    pr_query_words = [
+        w[1:] if w.startswith("#") and len(w) > 1 and w[1:].isdigit() else w
+        for w in pr_query_words
+    ]
     filter_key = " ".join(repo_filter)
+
+    # Cross-repo PR search (no repo prefix) — use GitHub search API to find
+    # PRs across every accessible repo. The repo-scoped path below relies on
+    # the cached open-PR list, which we can't use without a specific repo.
+    if not repo_filter:
+        items = []
+
+        cross_filters = {}
+        text_words = []
+        for w in pr_query_words:
+            if ":" in w:
+                key, _, val = w.partition(":")
+                if key in ("author", "label", "state") and val:
+                    cross_filters[key] = val
+                    continue
+            text_words.append(w)
+
+        query_str = " ".join(text_words)
+        is_branch_path = len(text_words) == 1 and "/" in text_words[0]
+        is_me_shortcut = text_words == ["me"] and bool(gh_username)
+        has_substantive_query = (
+            bool(cross_filters)
+            or is_branch_path
+            or is_me_shortcut
+            or len(query_str) >= 3
+        )
+
+        if not has_substantive_query:
+            items.append({
+                "title": "Keep typing to search PRs across all repos",
+                "subtitle": "e.g. gh pr fix/my-branch · gh pr #1234 · gh pr <title-words>",
+                "valid": False,
+                "icon": icon,
+            })
+        else:
+            # "me" as the sole text token → my open PRs across all repos
+            if not cross_filters and text_words == ["me"] and gh_username:
+                cmd = [gh_bin, "search", "prs",
+                       "--author", gh_username, "--state", "open", "--limit", "30",
+                       "--json", "number,title,author,repository,url,state,isDraft,createdAt"]
+            else:
+                cmd = [gh_bin, "search", "prs",
+                       "--limit", "30",
+                       "--json", "number,title,author,repository,url,state,isDraft,createdAt"]
+                if is_branch_path:
+                    cmd.extend(["--head", text_words[0]])
+                elif text_words:
+                    cmd.append(query_str)
+
+                author = cross_filters.get("author")
+                if author == "me" and gh_username:
+                    author = gh_username
+                if author:
+                    cmd.extend(["--author", author])
+                if cross_filters.get("label"):
+                    cmd.extend(["--label", cross_filters["label"]])
+                state = cross_filters.get("state")
+                if state and state != "all":
+                    cmd.extend(["--state", state])
+
+            cross_failed = False
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                cross_prs = json.loads(result.stdout) if result.returncode == 0 and result.stdout.strip() else []
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                cross_prs = []
+                cross_failed = True
+
+            if cross_prs:
+                for pr in cross_prs:
+                    pr_num = pr.get("number", 0)
+                    pr_title = pr.get("title", "")
+                    pr_author = pr.get("author", {}).get("login", "")
+                    repo_full = pr.get("repository", {}).get("nameWithOwner", "")
+                    pr_url = pr.get("url", "")
+                    is_draft = pr.get("isDraft", False)
+                    pr_state = pr.get("state", "open")
+                    draft_label = " [draft]" if is_draft else ""
+                    state_label = f" [{pr_state}]" if pr_state != "open" else ""
+                    items.append({
+                        "uid": f"gh-pr-{repo_full}-{pr_num}",
+                        "title": f"{repo_full}#{pr_num}{draft_label}{state_label} — {pr_title}",
+                        "subtitle": f"by {pr_author}",
+                        "arg": pr_url,
+                        "icon": icon,
+                        "text": {"copy": pr_url, "largetype": f"{repo_full}#{pr_num} {pr_title}"},
+                    })
+            else:
+                encoded = "+".join(pr_query_words) if pr_query_words else ""
+                items.append({
+                    "title": f"No PRs matching '{' '.join(pr_query_words)}'",
+                    "subtitle": "Enter to search on GitHub directly",
+                    "arg": f"https://github.com/search?type=pullrequests&q={encoded}",
+                    "icon": icon,
+                })
+
+            if cross_failed:
+                items.append({"title": "Search failed", "subtitle": "Check network or gh auth", "valid": False, "icon": icon})
+
+        output = {"items": items}
+        print(json.dumps(output))
+        raise SystemExit(0)
 
     repos = load_json(cache_file)
     matching = get_matching_repos(repos, repo_filter, prefs, filter_key)
@@ -586,6 +810,22 @@ if pr_mode:
         repo_name = repo["name"]
         full_name = repo["nameWithOwner"]
         url = repo["url"]
+
+        # Filter value autocomplete: when the last query word is "<key>:<partial>"
+        # without a trailing space in the raw query, suggest matching values for
+        # that filter so the user can Tab to complete. Trailing space → user has
+        # moved past the filter, run the search.
+        last_word = pr_query_words[-1] if pr_query_words else ""
+        if pr_query_words and not trailing_space and ":" in last_word:
+            fkey, _, partial = last_word.partition(":")
+            if fkey in PR_FILTER_KEYS:
+                prefix_words = pr_query_words[:-1]
+                items = build_pr_filter_suggestions(
+                    fkey, partial, prefix_words, owner, repo_name, full_name, url
+                )
+                output = {"items": items}
+                print(json.dumps(output))
+                raise SystemExit(0)
 
         # Parse key:value filters (author:, label:, state:) from query
         pr_filters = {}
